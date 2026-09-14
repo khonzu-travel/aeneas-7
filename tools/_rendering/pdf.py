@@ -1,20 +1,14 @@
 """
-Print rendering for the reader (STORY-205).
+Compose Markdown sections into one portable, print-ready PDF.
 
-The Archetype is the document people take *away* from the platform — read on a
-train, annotated before a review, carried into a design session. The web hub
-renders it a document at a time behind a login; this module composes the whole
-constitution into one portable file the reader keeps.
+`build_document_pdf` is the one entry point: it takes a title, a cover, and a
+list of `PdfSection`s and lays them out on the trim described below. Anything
+that wants a document set for offline reading, review, or printing — an
+operator tool, an export added later — calls it rather than growing a second
+renderer beside this one.
 
-Two entry points, one engine. `build_document_pdf` sets Markdown sections on
-the trim described below and takes its cover from the caller;
-`build_archetype_pdf` is that builder wearing the Archetype's own cover, and
-is what the `/archetype/pdf` endpoint calls. Anything else that wants a
-document set for a reader — an operator tool, an export added later — uses the
-general one rather than growing a second renderer beside this.
-
-The output is tuned for compact, high-contrast reading devices — the e-ink
-readers architects annotate on — rather than for a desktop screen or a printer:
+The output is tuned for compact, high-contrast reading devices — e-ink panels
+a document is annotated on — rather than for a desktop screen or a printer:
 
 * **A small trim.** The page is a little narrower than A5 and about as tall, so
   a reader displaying it whole shows it at roughly 1:1 instead of scaling a
@@ -39,11 +33,6 @@ readers architects annotate on — rather than for a desktop screen or a printer
   default.
 
 Usage:
-
-    pdf_bytes = build_archetype_pdf(
-        status="APPROVED",
-        sections=[PdfSection(title="System Context", body=markdown), ...],
-    )
 
     pdf_bytes = build_document_pdf(
         title="Field Notes",
@@ -191,19 +180,19 @@ _OUTLINE_LEVELS: Final[dict[str, int]] = {"h1": 0, "h2": 1, "h3": 2}
 
 # --- glyph coverage ---------------------------------------------------------
 
-#: The marks a document set by this module has to be able to carry (STORY-210).
+#: The marks a document set by this module has to be able to carry.
 #:
-#: Derived from the characters the Ledger and the design corpus actually use,
-#: not guessed at: the light box-drawing set diagrams are drawn with, the
-#: arrows a transition is written with, and the typographic marks prose carries.
-#: A caller that holds its own document should pass *that* instead — coverage
-#: is then decided against what is really on the page. This constant exists for
+#: Derived from the characters this repository's Markdown actually uses, not
+#: guessed at: the light box-drawing set diagrams are drawn with, the arrows a
+#: transition is written with, and the typographic marks prose carries. A
+#: caller that holds its own document should pass *that* instead — coverage is
+#: then decided against what is really on the page. This constant exists for
 #: the caller that has to choose a face before any document exists, which on a
 #: server is every caller.
 #:
-#: Deliberately excludes U+25B6/U+25C0 and U+2208, which appear only in
-#: `design/` prose and would cost the metrically-compatible family for ten
-#: occurrences the Archetype has never contained.
+#: Deliberately excludes U+25B6/U+25C0 and U+2208, which appear only rarely in
+#: prose and would cost the metrically-compatible family for a handful of
+#: occurrences.
 REQUIRED_REPERTOIRE: Final[str] = (
     "─│┌┐└┘├┤┬┴┼"  # box drawing
     "←↑→↓↔"                                      # arrows
@@ -217,7 +206,7 @@ REQUIRED_REPERTOIRE: Final[str] = (
 #: glyph by falling back to `Symbol` where it can — which is why arrows
 #: (U+2190–21FF) come out correctly — and by drawing a **filled box** where it
 #: cannot. Box-drawing characters (U+2500–257F) are the case that matters here:
-#: the design corpus draws its diagrams with them, so an Archetype section
+#: this repository's design docs draw their diagrams with them, so a section
 #: carrying one prints as a row of black rectangles, silently.
 #:
 #: Liberation leads because it is metrically compatible with Helvetica and
@@ -584,7 +573,7 @@ def _blocks_to_flowables(blocks: list[md.Block]) -> list[Flowable]:
 
 @dataclass(frozen=True)
 class PdfSection:
-    """One Archetype document, as it appears in the exported file."""
+    """One section of an exported document."""
 
     title: str
     body: str
@@ -708,8 +697,9 @@ def _cover(
     The opening page: title, an optional line under it, the caller's metadata,
     and the contents.
 
-    `cover_lines` is inline markup, already escaped — the Archetype's status
-    line carries an em dash entity, so escaping here would print it literally.
+    `cover_lines` is inline markup, already escaped — a caller's metadata line
+    may need an entity of its own (an em dash, say), so escaping here would
+    print it literally.
     """
     out: list[Flowable] = [Paragraph(md.escape(title), COVER_TITLE_STYLE)]
     if subtitle:
@@ -801,32 +791,3 @@ def build_document_pdf(
 
     doc.build(story)
     return buffer.getvalue()
-
-
-def build_archetype_pdf(
-    *,
-    status: str,
-    sections: list[PdfSection],
-    generated_at: datetime | None = None,
-    author: str = "AENEAS",
-) -> bytes:
-    """
-    Compose the Archetype into one portable document.
-
-    The Archetype's own presentation — its title, the line naming what it is,
-    and the status the export was taken at — over the general builder above.
-    """
-    generated_at = generated_at or datetime.now(UTC)
-    return build_document_pdf(
-        title="Archetype",
-        subtitle="The architectural constitution",
-        running_head="Archetype",
-        cover_lines=[
-            f"Status &mdash; {md.escape(status)}",
-            f"Generated {generated_at.strftime('%Y-%m-%d %H:%M')} UTC",
-        ],
-        sections=sections,
-        no_sections_note="No Archetype documents have been authored yet.",
-        generated_at=generated_at,
-        author=author,
-    )

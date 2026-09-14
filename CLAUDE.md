@@ -20,6 +20,11 @@ does v7 do X", the answer is there or belongs there.
 - **Work is turns, not notifications.** The platform enqueues a turn when an
   event calls for one; any worker holding the role's skills claims it. There
   are no long-lived per-role agents and no webhooks to agents.
+- **A turn is atomic, resumable, and cancellable.** At most one live turn
+  exists per `(stream, kind, artifact)`; a turn makes exactly one committing
+  write; it checkpoints as it goes so a requeue resumes; its heartbeat tells
+  it to stop when the artifact has moved. These are the reliability rules —
+  see `design/changes-from-v6.md` §5 for the v6 failures they replace.
 - **Loops are declared.** Every generate → verify → retry cycle names its
   verifier, its bound, and its stop condition. A bound the platform does not
   count is not a bound.

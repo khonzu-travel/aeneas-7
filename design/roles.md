@@ -69,6 +69,8 @@ turn token:
 | Author and review the same version | A review turn is refused for a version whose authoring turn ran under a token from the same worker session; workers are stateless so this only guards a misconfigured deployment |
 | Modify frozen acceptance tests | The verifier fails an implementer diff that touches paths frozen at the tester's task completion |
 | Exceed the turn budget | The worker reports usage on heartbeat; the platform fails the turn at the budget and records why |
+| Make a second committing write | The Custodian marks the turn's write when it commits and refuses the next one, naming what landed |
+| Keep working after being superseded | The heartbeat answers `SUPERSEDED` or `CANCELLED`; a completion from such a turn is refused |
 
 ---
 
@@ -123,12 +125,18 @@ A worker is a process that:
 3. Receives the turn's token, budget, and artifact references.
 4. Materializes the feature's working tree (branch checkout plus the rendered
    `specs/F-####-slug/` bundle) when the skill needs a filesystem.
-5. Executes the skill, calling the `/v1` API for every read and write.
-6. Heartbeats with usage; completes or fails the turn with a structured result.
+5. Executes the skill, calling the `/v1` API for every read, validating each
+   model output against the schema the skill declares and running a bounded
+   repair pass on a malformed one, and checkpointing at each declared stage.
+6. Heartbeats with usage, and stops immediately if the heartbeat says the turn
+   is superseded or cancelled.
+7. Makes the turn's single committing write, then completes — or fails with a
+   class the platform can route on.
 
 A worker holds no state between turns. Two workers are interchangeable; a
-worker that dies loses at most the turn it held, which requeues at lease
-expiry. See [`platform/turn-queue.md`](platform/turn-queue.md).
+worker that dies loses at most the work since its last checkpoint, and the
+turn requeues at lease expiry. See
+[`platform/turn-queue.md`](platform/turn-queue.md).
 
 Inside a turn, a skill may run sub-agents, parallel tool calls, or a
 Spec Kit command. The platform sees the turn's reads, writes, usage, and

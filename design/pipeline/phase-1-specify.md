@@ -11,8 +11,12 @@
 
 1. The Product Owner submits intent in the UI: a description, a priority, a
    type, the measurable constraints the form asks for, and a budget (defaulted
-   from the project). The platform records `FeatureCreated`, issues `F-####`,
-   and enqueues `spec.author`.
+   from the project). If features in flight are below `MAX_OPEN_FEATURES`, the
+   platform records `FeatureCreated`, issues `F-####`, and enqueues
+   `spec.author`. Otherwise the intent is queued as `PENDING_INTAKE` with its
+   position shown to the Product Owner, and admitted when a feature closes —
+   backpressure at the front door rather than a burst of authoring turns
+   competing for the same workers, models, and reviewers.
 2. An analyst turn runs the `specify` skill against the intent, the Charter,
    and the Constitution, and submits `spec.md`. The format verifier refuses a
    version missing a required section.

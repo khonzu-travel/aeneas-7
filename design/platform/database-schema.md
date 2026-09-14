@@ -110,6 +110,12 @@ CREATE TABLE amendments (
 `data_model`, `data_model_versions`, `data_model_reservations`, and
 `plan_entity_refs` are in [`../ledger/data-model.md`](../ledger/data-model.md).
 
+The heartbeat path (`UPDATE turns SET lease_expires_at, last_heartbeat_at
+WHERE turn_id = $1 AND worker_id = $2`) touches one row by primary key and
+takes no other lock. It is served from a reserved connection allowance so it
+can never queue behind a projection read — a lapsed lease must mean a dead
+worker, never a busy platform.
+
 ---
 
 ## Version tables
@@ -196,6 +202,10 @@ CREATE TABLE turns (
     deadline           TIMESTAMPTZ,
     attempt            INTEGER NOT NULL DEFAULT 0,
     max_attempts       INTEGER NOT NULL DEFAULT 3,
+    expected_seconds   INTEGER NOT NULL,          -- from the skill; sizes the lease
+    slots              INTEGER NOT NULL DEFAULT 1,-- worker capacity this turn occupies
+    checkpoint_seq     INTEGER NOT NULL DEFAULT 0,
+    write_committed    BOOLEAN NOT NULL DEFAULT false,  -- Single Committing Write
     budget_tokens      BIGINT NOT NULL,
     status             TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','CLAIMED','DONE','FAILED','CANCELLED')),
     worker_id          TEXT,
@@ -210,6 +220,42 @@ CREATE INDEX ON turns (role, priority, created_at) WHERE status = 'QUEUED';
 CREATE INDEX ON turns (lease_expires_at) WHERE status = 'CLAIMED';
 CREATE UNIQUE INDEX turns_one_live
     ON turns (stream_id, kind, artifact_ref) WHERE status IN ('QUEUED','CLAIMED');
+
+CREATE TABLE turn_checkpoints (
+    turn_id     UUID NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    label       TEXT NOT NULL,
+    payload     JSONB NOT NULL,
+    bytes       INTEGER NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (turn_id, seq)
+);
+-- Not events and not content versions: no authority, nothing reads them for a
+-- decision, deleted with the turn. They exist so a requeued attempt resumes.
+
+CREATE TABLE skill_registry (
+    skill             TEXT NOT NULL,
+    version           TEXT NOT NULL,
+    role              TEXT NOT NULL,
+    kinds             TEXT[] NOT NULL,
+    model_tier        TEXT NOT NULL,
+    expected_seconds  INTEGER NOT NULL,
+    slots             INTEGER NOT NULL DEFAULT 1,
+    max_checkpoints   INTEGER NOT NULL DEFAULT 16,
+    max_checkpoint_bytes INTEGER NOT NULL DEFAULT 4194304,
+    output_schemas    JSONB NOT NULL DEFAULT '{}',   -- per output, for in-turn validation
+    budget_tokens     BIGINT NOT NULL,
+    published_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (skill, version)
+);
+
+CREATE TABLE workers (
+    worker_id     TEXT PRIMARY KEY,
+    roles         TEXT[] NOT NULL,
+    skills        JSONB NOT NULL,          -- skill → versions available
+    total_slots   INTEGER NOT NULL,
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 CREATE TABLE skill_standdowns (
     skill       TEXT NOT NULL,
@@ -286,6 +332,15 @@ CREATE TABLE usage_ledger (
 );
 
 CREATE TABLE model_prices ( engine TEXT, model TEXT, effective_from TIMESTAMPTZ, input_micros BIGINT, output_micros BIGINT, cached_micros BIGINT, PRIMARY KEY (engine, model, effective_from) );
+
+CREATE TABLE intake_queue (                              -- MAX_OPEN_FEATURES backpressure
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    intent       TEXT NOT NULL,
+    priority     INTEGER NOT NULL,
+    submitted_by TEXT NOT NULL,
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    admitted_feature_id UUID REFERENCES features(id)     -- NULL while PENDING_INTAKE
+);
 
 CREATE TABLE processed_requests (
     idempotency_key TEXT PRIMARY KEY,

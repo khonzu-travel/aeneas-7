@@ -14,6 +14,7 @@ inputs:
   - verdicts[]               # plan.revise only, with patches
   - redirect-note            # after MAX_PLAN_REJECTIONS, if the Solution Architect redirected
 outputs: [plan-bundle]
+commits: submit-plan
 tools:
   - read-artifact
   - read-data-model
@@ -22,6 +23,14 @@ tools:
   - submit-plan
   - open-clarification       # target: analyst
 sub_skills: [data-model, contracts, threat-model, quickstart, tasks, checklist]
+expected_seconds: 600
+slots: 2
+checkpoints: [research, data-model, contracts, threat-model, quickstart, tasks]
+output_schemas:
+  plan.md: schemas/plan.schema.json
+  data-model.md: schemas/declaration.schema.json
+  tasks.md: schemas/tasks.schema.json
+repair_passes: 2
 budget: { tokens: 400000, cost_micros: 6000000 }
 verifier: [format, capabilities, constitution-check, coverage, data-model, write-set, markers]
 built_on: spec-kit/templates/commands/plan.md, spec-kit/templates/plan-template.md
@@ -84,15 +93,34 @@ Design decisions in your own discipline are yours. State assumptions in
 `## Assumptions` of `plan.md`. Sessions are bounded; past the bound, decide
 and record.
 
+## Checkpoint, and stop when told
+
+Checkpoint after each sub-skill, naming the stage. If this turn dies, the next
+attempt is handed what you stored and continues from there — an unstored
+`data-model.md` is one you will pay to write again.
+
+Heartbeat while you work. If a heartbeat answers anything but `CURRENT`, stop
+**before your next model call** and fail the turn with that reason: the spec
+has been revised or the feature abandoned underneath you, and everything you
+write from here is discarded. Watch `budget_remaining` and shorten your own
+work if it is running low — drop an optional research alternative, not a
+required section — rather than being failed mid-call at the ceiling.
+
 ## Submit
 
-`submit-plan-version` with every file, then `submit-plan`. If the
-deterministic gates refuse, fix and resubmit within this turn. Your turn
-ends at a successful submit, an open clarification session, or a stated
-Constitution gap.
+Your turn has exactly **one committing write**: `submit-plan`, carrying every
+file of the bundle. Build the whole bundle first, validate each file against
+its schema as you produce it (a malformed or truncated output gets one bounded
+repair pass, not a resubmission), and submit once. There is no partial state
+to leave behind and no second call to make.
+
+If the deterministic gates refuse, fix and resubmit within this turn; a
+refusal is not a committing write. Your turn ends at a successful submit, an
+open clarification session, or a failure.
 
 ## You may not
 
 Change `spec.md`. Write to the trunk. Name a capability the map lacks.
 Assert a `change_kind`. Leave a task without a file path. List an implement
-task before the test tasks of its story.
+task before the test tasks of its story. Make a second committing write.
+Continue after a heartbeat says you are superseded.

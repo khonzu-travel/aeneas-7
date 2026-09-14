@@ -11,6 +11,10 @@ Rules the platform enforces. A rule a skill could ignore is not on this page.
 | **Platform-Owned Transitions** | No API accepts a status. Every transition is executed by the Custodian in response to a validated signal, recorded as an event on the artifact's stream, and mirrored on the entity table |
 | **Sole Writer** | Workers and the UI hold no database credentials. All writes pass through the Custodian |
 | **Turn Scope** | Every worker write carries a turn token naming `turn_id`, `role`, `feature_id`, and expiry. A write outside that scope, or after expiry, is refused |
+| **Single Committing Write** | A turn performs any number of reads and exactly one committing write. A second is refused, naming the write that landed. Checkpoints and heartbeats are exempt because they change no governed state. A turn therefore cannot leave an artifact half-created |
+| **Whole-Artifact Submission** | An artifact is submitted entire — the Plan bundle with its `tasks.md`, the spec with its sections — never assembled by successive calls. This is what makes Single Committing Write affordable |
+| **One Live Turn** | At most one `QUEUED` or `CLAIMED` turn exists per `(stream, kind, artifact)`, enforced by a partial unique index. A duplicate enqueue is a no-op, so no artifact is ever authored twice concurrently |
+| **Currency** | A turn learns at its heartbeat that it is superseded or cancelled, and its completion is refused with that reason. Work does not continue against an artifact that has moved |
 | **Append-Only Audit** | `events` and every content version table reject `UPDATE` and `DELETE` by trigger |
 | **ID Issuance** | Identifiers (`F-####`, `T###` within a feature, `A-####`) are issued by the platform from sequences. A worker that supplies one is refused |
 | **Format Conformance** | A submitted `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, or `constitution.md` is parsed against its template. A missing required section, an unnumbered requirement, a task without a file path, or an unresolved `[NEEDS CLARIFICATION]` at submit-for-review is refused with the location |
@@ -28,6 +32,7 @@ Rules the platform enforces. A rule a skill could ignore is not on this page.
 | **Governed Abandonment** | Only a human retires work: the Product Owner a Feature, the Delivery Lead or Product Owner a task. A reason is required; the cascade is strictly downward; `[ABANDONED]` has no edge out |
 | **Bounded Loops** | Every loop bound below is a platform counter checked at the signal; reaching it refuses the next iteration and enqueues the declared escalation |
 | **Budgeted Features** | Every turn reports usage; the platform fails a turn at its turn budget and raises a `BUDGET_EXHAUSTED` blocker at the feature budget. Nothing else in the decision path reads a cost |
+| **Bounded Intake** | Features not yet terminal are capped at `MAX_OPEN_FEATURES`; intent past the cap is queued as `PENDING_INTAKE` with its position. Backpressure exists before Build, not only at the scheduling gate |
 | **No Self-Remediation** | The `operator` role writes anomaly records only. A production change is a new Feature |
 
 ---
@@ -49,6 +54,9 @@ Rules the platform enforces. A rule a skill could ignore is not on this page.
 | `TURN_BUDGET` | Per turn, from the skill | skill-defined | Turn `[FAILED]` with `BUDGET` |
 | `FEATURE_BUDGET` | Per feature, from intent capture | project default | `BUDGET_EXHAUSTED` blocker to the Product Owner, who raises the budget or abandons |
 | `MAX_BUILD_WIP` | Features in Build | project default | Scheduler holds |
+| `MAX_OPEN_FEATURES` | Features not `[DONE]` or `[ABANDONED]` | project default | New intent is queued as `PENDING_INTAKE` |
+| `MAX_REPAIR_PASSES` | Per model call within a turn | 2 | The turn fails `TRANSIENT` with the invalid output attached; the next attempt resumes from the last checkpoint |
+| `MAX_CHECKPOINTS`, `MAX_CHECKPOINT_BYTES` | Per turn, from the skill | skill-defined | The checkpoint write is refused; the turn continues |
 
 ---
 
@@ -66,8 +74,10 @@ of these is false.
 7. Every Data Model version traces to the approved Plan version whose declaration it transcribes, or to its own recorded review.
 8. No two Plans past submit-for-review introduce the same `(kind, name)`.
 9. Every turn token ever honored named a turn that was `[CLAIMED]` at the time.
-10. Every applied Amendment corresponds to exactly one Constitution version.
-11. No feature exceeds `FEATURE_BUDGET` without a `BUDGET_EXHAUSTED` blocker recorded.
+10. No turn has more than one committing write recorded against it.
+11. No `(stream, kind, artifact)` has two live turns against it.
+12. Every applied Amendment corresponds to exactly one Constitution version.
+13. No feature exceeds `FEATURE_BUDGET` without a `BUDGET_EXHAUSTED` blocker recorded.
 
 ---
 
@@ -94,6 +104,14 @@ rule.
 
 **Self-assessment is telemetry.** What a worker says about its own work is
 recorded and never decides anything. What the verifier says decides.
+
+**A turn is the unit the platform can see.** Because work is a row the
+platform issues, leases, and closes, it can be deduplicated, resumed,
+budgeted, cancelled, and shown to a human. Every property this design relies
+on for reliability under load — one live turn per artifact, one committing
+write, resume from checkpoint, stop when superseded, a visible pen holder —
+follows from the platform knowing what a unit of work is. v6's repairs were
+agent-side guards for a unit the platform could not see.
 
 **Humans approve intent and accept risk.** Product Owners approve what is to be
 built; Solution Architects approve how and accept high-risk integrations;

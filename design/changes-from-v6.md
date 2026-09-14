@@ -16,6 +16,12 @@ The concerns, as raised:
    throughput once several features ran in parallel.
 5. What else should change.
 
+Concern 2 has two halves that are worth separating. Throughput — how much work
+the system can carry — is §2 and §4. Reliability — agents failing to create
+specs, claim tasks, and update artifacts once several features ran at once —
+is §5, which analyses each of those three operations and the mechanisms that
+replace them.
+
 ---
 
 ## 1. Commissions are replaced by one authoring turn and one parallel review round
@@ -61,7 +67,7 @@ is **machine-readable where it is approved**. That survives intact:
 the Constitution's representation contract at submit, classified by the
 platform (a `BREAKING` change is still refused at the gate), reserved by name
 across features, and transcribed into the project Data Model **by the
-platform** at integration — see §5. The specialist that would have authored
+platform** at integration — see §6. The specialist that would have authored
 it now reviews it with the same skill, in an independent context, and can
 reject or patch it. Author-reviewer separation is enforced structurally: a
 review turn is always a fresh turn with no access to the authoring turn's
@@ -113,8 +119,8 @@ planner (plan, tasks), four reviewers (architecture, data, security, UX), the
 implementer (backend and frontend skill variants), the tester, the integrator
 (integrate, release), the operator (observe, triage). The Scrum Master's
 scheduling and blocker routing become deterministic platform logic with a
-human override (§5). The System Architect's `AGGREGATE_DELTA` is gone with
-`changeDelta` (§5). The Business Analyst's charter interview is the analyst's
+human override (§6). The System Architect's `AGGREGATE_DELTA` is gone with
+`changeDelta` (§6). The Business Analyst's charter interview is the analyst's
 `charter` skill.
 
 **Load behavior.** The queue is the backpressure surface: depth per role is
@@ -237,7 +243,64 @@ Amendment triggers a re-analyze turn on every open Plan. See
 
 ---
 
-## 5. Further changes
+## 5. Turns are the unit of work, so authoring, claiming, and updating stop failing under load
+
+Concern 2 named a symptom — the roster failing under load — that is worth
+separating from throughput. Three specific operations failed in v6 at scale:
+creating a spec, claiming a task, and updating an artifact. They share one
+cause, and it is not slowness.
+
+**The platform could not see a unit of work.** It saw signals arriving and
+notifications going out, so it could not tell a turn in flight from one that
+never started, could not stop the same work being started twice, could not
+resume a half-finished one, and could not bound what one was allowed to spend.
+Every repair in v6 was therefore an agent-side guard for something only the
+platform could have seen: an in-memory in-flight set, a per-flow backoff, a
+roster-wide sweep, a one-shot gate on the charter interview, a forced-reclaim
+endpoint.
+
+### What each operation actually did
+
+| Operation | v6 mechanism | Why it failed |
+|---|---|---|
+| **Creating a spec** | One turn issuing `specs/create`, then a draft version, then one `tasks/create` per task, then one commission request per specialist, then submit-for-review — a dozen mutations with no transaction around them | Any failure mid-sequence left partial state: a spec record with no content version, half a task graph, or a Commission the settlement gate would then hold the spec behind. Two entry paths (the notification and the sweep) could start the same turn, and the guard against that was an in-process set, so it did not hold across replicas |
+| **Claiming a task** | Every board-changing event notified every Guild agent; each read `/board` and claimed the top row; the Custodian's per-artifact lock let one win | A thundering herd on every event, where the losers returned without trying the next task and then idled until the next event or the 15-minute sweep. Claims on one feature serialized behind a single advisory lock, and the claim heartbeat competed with board reads for the same connection pool — so under load a lease could lapse because the platform was busy, and the reaper would reclaim work that was still being done |
+| **Updating an artifact** | Status preconditions and the capability allow-list were checked at the write, under a per-artifact lock, after the model call that produced the content | A turn whose reads had gone stale spent its whole model call and was then refused. A unique-constraint collision surfaced as a 500, which the agent client treated as transient and retried. Output above the token ceiling truncated, failed the JSON parse, and saved nothing. The agent host ran every handler as an uncapped background task, so load multiplied concurrency inside one process |
+
+### What v7 does
+
+Six mechanisms, all of them consequences of the platform owning a **turn**:
+
+| Mechanism | Replaces | Effect |
+|---|---|---|
+| **One live turn per `(stream, kind, artifact)`**, a partial unique index | In-memory in-flight sets, the sweep's re-entrancy guard, STORY-219 | A duplicate enqueue is a no-op. Two turns cannot author one artifact, across any number of workers |
+| **One committing write per turn**, with whole-artifact submission | A dozen sequential mutations | Partial state is unrepresentable. There is no half-created spec to resume, so no resume path to get wrong |
+| **A turn per ready task, claimed with `SKIP LOCKED`** | Board fan-out and the claim race | Exactly one worker is handed each task; nobody contends, nobody idles after losing, and no board read precedes a claim |
+| **Checkpoints** | Discarding a whole turn's output on any failure | A requeued attempt resumes from the last stage. A crash costs minutes, not a full planner turn's tokens |
+| **Heartbeat currency** (`CURRENT` / `SUPERSEDED` / `CANCELLED`, with remaining budget) | Discovering staleness at the final write | A superseded turn stops before its next model call. Wasted spend is bounded by one heartbeat interval instead of one turn |
+| **In-turn schema validation with a bounded repair pass** | Truncation → parse failure → fail-closed turn → identical retry | A malformed output costs one small call. Only a non-converging repair fails the turn |
+
+Two supporting changes close the conditions that made lease expiry lie.
+Leases are sized from each skill's declared `expected_seconds` rather than one
+global constant, and the heartbeat path is a single indexed-row update served
+from a reserved connection allowance, so it can never queue behind a
+projection read. A lapsed lease means a dead worker, which is what the reaper
+assumes.
+
+Backpressure is added where v6 had none: `MAX_OPEN_FEATURES` caps features in
+flight at intake, `slots` cap concurrent turns per worker, and both surface as
+queue depth rather than as contention. v6 bounded only Build.
+
+Finally, the condition becomes visible. The `pen_holder` projection reports,
+for every artifact with a live turn, the turn, its skill version, the worker,
+its heartbeat age, its checkpoints, and its spend. An agent working, an agent
+crashed, and an agent that never received its notification were
+indistinguishable in v6 — all three looked like an artifact that had stopped
+moving.
+
+---
+
+## 6. Further changes
 
 **Platform-run verifiers replace `changeDelta`.** v6 had each Guild Lead score
 its own work on a Fibonacci rubric, then a System Architect task RSS-combined
@@ -313,6 +376,13 @@ gate.
 | Petition + Amendment | **Amendment** |
 | Data Model (ledger artifact, declarations, classification, reservation, citation) | Kept; written by the platform at integration; declarations authored in `data-model.md` |
 | Twelve named agents, agent host, webhooks, sweeps | **Worker pool**, **turn queue**, per-turn tokens, role skills |
+| In-memory in-flight guards, per-flow retry backoff, the one-turn-per-Story fix (STORY-219) | One live turn per `(stream, kind, artifact)`, a partial unique index |
+| Multi-call artifact creation (create → draft → tasks → commissions → submit) | One committing write per turn, whole-artifact submission |
+| Board fan-out and the claim race; `projection_active_claims` | A turn per ready task, claimed with `SKIP LOCKED`; turn leases |
+| A single `claim_lease_seconds` and a heartbeat competing for the pool (STORY-214, STORY-220) | Leases sized from the skill's `expected_seconds`; heartbeats on a reserved connection allowance |
+| Truncation → parse failure → fail-closed turn | In-turn schema validation with a bounded repair pass |
+| Discovering supersession at the final write | Heartbeat currency: stop before the next model call |
+| Forced reclaim of stuck work (STORY-192/193), "is it working or dead?" | `pen_holder` projection; a turn past `deadline` is an alert |
 | Scrum Master | Platform scheduler + human Delivery Lead override |
 | Guild Lead / sub-agent model | A skill may spawn sub-agents inside its turn; the platform sees the turn |
 | `changeDelta`, RSS, bands, `AGGREGATE_DELTA` | Platform **risk score** from deterministic signals; band decides human review at integration |
@@ -327,6 +397,7 @@ gate.
 | Notification outbox, drain | Removed; turn queue rows are the obligation |
 | Active claims, stale-claim reaper, heartbeat | Turn leases and heartbeats; the reaper requeues turns |
 | Idempotency keys | Kept |
+| WIP limit at the scheduling gate only (STORY-216) | Kept, plus `MAX_OPEN_FEATURES` at intake and `slots` per worker |
 | Execution provenance, turn telemetry, model price, efficiency report | Kept, simplified: every turn records usage; **budgets** are governed; the rest is non-governing |
 | Abandonment | Kept; cascades along the feature stream |
 | Operations anomaly, escalation routing, security escalation | Operator skill records anomalies; routing is by rule to the owning human; a fix is a new feature |

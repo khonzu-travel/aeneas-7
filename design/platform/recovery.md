@@ -6,7 +6,12 @@ leased table.
 
 | Failure | What is at risk | Recovery |
 |---|---|---|
-| Worker dies mid-turn | The turn's work | Lease lapses; the reaper requeues the turn (attempt kept). The next worker re-derives everything from the artifact. Writes the dead worker made are committed and idempotent; its token is refused once the turn is requeued |
+| Worker dies mid-turn | The model output since its last checkpoint | Lease lapses; the reaper requeues the turn with its attempt count and its checkpoints. The next worker resumes from the last checkpoint rather than re-deriving. The dead worker's token is refused, and its next heartbeat (if it revives) answers `CANCELLED` |
+| Worker alive but the artifact moved | Every token the turn spends after that | The heartbeat answers `SUPERSEDED`; the worker stops before its next model call. Its completion would be refused anyway, so the only thing at stake is waste, bounded to one heartbeat interval |
+| A model call returns unparseable or malformed output | The turn | The skill's bounded repair pass runs inside the turn against the declared output schema. Only a non-converging repair fails the turn, and it resumes from the last checkpoint |
+| Lease lapses because the platform was slow, not because the worker died | Live work reclaimed | Cannot happen by construction: the heartbeat path is a single indexed row update on a reserved connection allowance, and requeuing re-validates under the row lock, so a turn that heartbeated between detection and requeue is left alone |
+| A turn is enqueued twice | Two turns authoring one artifact | Cannot happen: a partial unique index allows one live turn per `(stream, kind, artifact)`; the second enqueue is a no-op |
+| A turn dies between two writes | A half-created artifact | Cannot happen: a turn has exactly one committing write |
 | Platform dies mid-write | Nothing: the transaction rolled back | The caller retries with the same `Idempotency-Key` |
 | Platform dies after commit, before the response | A duplicate on retry | `processed_requests` replays the stored result |
 | Verifier runner dies mid-run | A run stuck at `RUNNING` | The reaper re-drives runs past their timeout as `INFRA` (not counted as an attempt); suites are deterministic and re-runnable |

@@ -80,10 +80,22 @@ the skill, the feature, the triggering event, the artifact scope, a budget,
 and a deadline. Turns are enqueued by the Custodian in the same transaction
 as the event that calls for them. A **worker** claims a turn it can run, is
 issued a token good only for that turn, loads the skill, does the work through
-the `/v1` API, and completes or fails the turn. Leases and heartbeats make a
-crashed worker's turn requeue. There are no per-role processes and no
-notifications to agents. See [`platform/turn-queue.md`](platform/turn-queue.md)
-and [`roles.md`](roles.md).
+the `/v1` API, and completes or fails the turn. There are no per-role
+processes and no notifications to agents.
+
+Five properties of a turn are what make work survive load, and each one is a
+failure v6 could not prevent because it had no unit of work to attach them to:
+
+| Property | Consequence |
+|---|---|
+| At most **one live turn** per `(stream, kind, artifact)` | Two workers never author one artifact |
+| Exactly **one committing write** per turn | A turn cannot leave an artifact half-created |
+| **Checkpoints** stored as it goes | A requeued turn resumes instead of re-deriving |
+| A **heartbeat that answers** `CURRENT` / `SUPERSEDED` / `CANCELLED` | A stale turn stops before its next model call |
+| A **lease sized from the skill**, heartbeated on a reserved connection | A lapsed lease means a dead worker, not a busy platform |
+
+See [`platform/turn-queue.md`](platform/turn-queue.md) and
+[`roles.md`](roles.md).
 
 ---
 

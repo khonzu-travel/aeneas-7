@@ -26,15 +26,32 @@ model_tier: reasoning
 needs_fs: true
 inputs:  [spec@approved, constitution@current, data-model, plan@previous?, analyze-report?, verdicts[]?]
 outputs: [plan-bundle]
+commits: submit-plan                 # the turn's single committing write
 tools:   [read-artifact, submit-plan-version, submit-plan, open-clarification, read-data-model]
+expected_seconds: 600                # the platform sets the lease to 3× this
+slots: 2                             # worker capacity one turn of this kind occupies
+checkpoints: [research, data-model, contracts, threat-model, quickstart, tasks]
+output_schemas:                      # validated in-turn, per call, before anything is submitted
+  plan.md: schemas/plan.schema.json
+  data-model.md: schemas/declaration.schema.json
+repair_passes: 2                     # bounded; a non-converging repair fails the turn
 budget:  { tokens: 400000, cost_micros: 6000000 }
 verifier: [format, capabilities, constitution-check, coverage, data-model, write-set, markers]
 ```
 
 The platform validates on registration that every `kinds` entry maps to
-`role`, that `tools` are within the role's permission set, and that `verifier`
-names checks the runner has. A worker refuses a turn naming a version it does
-not have.
+`role`, that `tools` are within the role's permission set, that `commits`
+names exactly one write, and that `verifier` names checks the runner has. A
+worker refuses a turn naming a version it does not have.
+
+Four fields exist for reliability under load rather than for quality:
+
+| Field | What it buys |
+|---|---|
+| `commits` | One committing write per turn, so a turn cannot half-create an artifact |
+| `expected_seconds` | A lease sized to the turn, so a long turn is not reaped and a dead short one is not held |
+| `checkpoints` | A requeued attempt resumes instead of re-deriving, so a crash costs minutes rather than a whole turn's tokens |
+| `output_schemas`, `repair_passes` | A malformed or truncated model output is repaired inside the turn, so it costs one small call instead of a requeue that will truncate again |
 
 Skills built on Spec Kit's command templates say so, so that upstream
 template changes can be reviewed against the skill.

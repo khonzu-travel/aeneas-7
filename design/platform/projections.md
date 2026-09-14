@@ -67,13 +67,23 @@ this so a human sees their own decision reflected immediately.
 | `blockers` | Open blockers with the artifact, raiser, reason, resume context, and the human that owns clearing them | `blocker_id` | age |
 | `review_status` | Open review stages: reviewer, decision, verdict id | `(feature_id, reviewer)` | — |
 | `merge_queue_view` | Features `[INTEGRATING]`: position, attempts, risk band, waiting on whom | `feature_id` | position |
-| `turn_metrics` | Queue depth, claim latency, duration, attempts, failure classes per role and kind; stand-downs | `(role, kind, window)` | — |
+| `pen_holder` | Every artifact with a live turn against it: the turn, kind, skill version, worker, heartbeat age, checkpoints stored, budget spent | `artifact_ref` | heartbeat age desc |
+| `turn_metrics` | Queue depth, claim latency, duration, attempts, checkpoints, failure classes per role and kind; stand-downs | `(role, kind, window)` | — |
+| `intake_queue_view` | Intent queued behind `MAX_OPEN_FEATURES`, with position | `id` | position |
 | `budget_ledger` | Usage and cost per feature, per turn kind, per model tier, against budget | `feature_id` | — |
 | `data_model_impact` | For each document, live citing features; reservations by feature | `document_id` | — |
 | `audit_feature` | Rendered timeline per feature | `feature_id` | `stream_seq` |
 
 The turn queue is a table, not a projection: it is written by the Custodian
 and read by workers directly.
+
+`pen_holder` is the answer to "why has this artifact not moved". A live turn
+with a recent heartbeat is work in progress; one with a stale heartbeat is a
+worker that died and a lease about to lapse; no turn at all on an artifact
+that is not terminal and not waiting on a human is a missing enqueue, which is
+an alert. In v6 these three were indistinguishable — an agent working, an
+agent crashed, and an agent that never got the notification all looked like an
+artifact sitting still.
 
 ---
 

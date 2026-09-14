@@ -68,7 +68,9 @@ For every write:
    A refusal returns the reason and writes nothing.
 4. **Begin** a transaction; read the stream head.
 5. **Write** the content version (if any), the entity state, the event at
-   `head + 1`, the turns the event calls for, reservations and counters.
+   `head + 1`, the turns the event calls for, reservations and counters. For a
+   worker call, mark the turn's `write_committed` in the same statement, which
+   is what makes Single Committing Write structural rather than advisory.
 6. **Commit**. A unique-index conflict on `(stream_id, stream_seq)` means a
    concurrent write landed on this stream; retry from step 2 up to three
    times, then refuse with `CONFLICT`.
@@ -84,7 +86,7 @@ writes to different streams never interact. See [`event-store.md`](event-store.m
 
 | Area | Endpoints | Caller |
 |---|---|---|
-| Turns | `POST /v1/turns/claim` · `POST /v1/turns/{id}/heartbeat` · `POST /v1/turns/{id}/complete` · `POST /v1/turns/{id}/fail` | workers |
+| Turns | `POST /v1/turns/claim` · `POST /v1/turns/{id}/heartbeat` (answers `CURRENT` / `SUPERSEDED` / `CANCELLED` with the remaining budget) · `POST /v1/turns/{id}/checkpoint` · `POST /v1/turns/{id}/complete` · `POST /v1/turns/{id}/fail` | workers |
 | Feature Spec | `POST /v1/features/{f}/spec/versions` · `POST /v1/features/{f}/spec/submit` · `GET /v1/features/{f}/spec[@version]` | analyst turn |
 | Plan | `POST /v1/features/{f}/plan/versions` (the bundle) · `POST /v1/features/{f}/plan/submit` · `GET …` | planner turn |
 | Reviews | `POST /v1/features/{f}/plan/reviews` (verdict) | reviewer turns |
@@ -99,6 +101,11 @@ writes to different streams never interact. See [`event-store.md`](event-store.m
 
 Every write accepts an `Idempotency-Key`; a retried key replays the original
 result. Every response carries `commit_xid`.
+
+**One committing write per turn.** Each row above that a worker calls is that
+turn's single committing write; the Custodian refuses a second on the same
+token. Checkpoints and heartbeats are exempt because they change no governed
+state. See [`turn-queue.md`](turn-queue.md).
 
 ---
 
